@@ -25,6 +25,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_no_cache_headers(request, call_next):
+    response = await call_next(request)
+    # Ensure index.html and API calls never return stale 304s to the browser
+    path = request.url.path
+    if path == "/" or path.endswith(".html") or path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # Static file serving for media preview (cached video, audio, rendered clips)
 app.mount("/storage", StaticFiles(directory=str(STORAGE_PATH)), name="storage")
 
