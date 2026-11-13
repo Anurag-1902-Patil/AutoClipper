@@ -17,10 +17,9 @@ class GeminiProvider(LLMProvider):
     def _call_api(self, prompt: str, system_instruction: Optional[str] = None) -> Tuple[str, int, int]:
         # Models to try in order if 503 high demand occurs
         models_to_try: List[str] = [self.model_name]
-        if "3.6" in self.model_name:
-            models_to_try.append("gemini-3.5-flash")
-        elif "3.5" in self.model_name:
-            models_to_try.append("gemini-3.6-flash")
+        for candidate in ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"]:
+            if candidate not in models_to_try:
+                models_to_try.append(candidate)
 
         last_error_text = ""
         max_attempts_per_model = 3

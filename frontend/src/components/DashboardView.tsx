@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, Edit3, CheckSquare, Square, Download, Share2, Flame, Play, Clock, Zap, DollarSign } from 'lucide-react';
+import { Sparkles, Edit3, CheckSquare, Square, Download, Share2, Flame, Play, Clock, Zap, DollarSign, Wand2 } from 'lucide-react';
 import { Job, Clip } from '../types';
 import { updateClip } from '../services/api';
 
@@ -8,6 +8,7 @@ interface DashboardViewProps {
   onEditClip: (clip: Clip) => void;
   onGoToExport: () => void;
   onRefreshJob: () => void;
+  onReclip?: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -15,6 +16,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onEditClip,
   onGoToExport,
   onRefreshJob,
+  onReclip,
 }) => {
   const clips = job.clips || [];
   const selectedClips = clips.filter((c) => Boolean(c.is_selected));
@@ -81,6 +83,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {(job.token_usage_input || 0) + (job.token_usage_output || 0)} tokens ({job.llm_provider})
             </div>
           </div>
+
+          {onReclip && (
+            <button
+              onClick={onReclip}
+              className="px-4 py-3 rounded-xl font-bold text-xs uppercase tracking-wider bg-gradient-to-r from-purple-500 to-indigo-600 hover:brightness-110 text-white flex items-center gap-2 transition shadow-md shadow-indigo-500/20 cursor-pointer"
+              title="Re-run viral Q&A & punchy hook discovery on this video (~15s)"
+            >
+              <Wand2 className="w-4 h-4" />
+              <span>Re-Mine with New AI</span>
+            </button>
+          )}
 
           <button
             onClick={onGoToExport}

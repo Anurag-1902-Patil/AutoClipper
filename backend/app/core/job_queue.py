@@ -82,18 +82,34 @@ def execute_job_pipeline(job_id: str, req: JobCreateRequest):
         # Step 1: Ingest
         update_job_status(job_id, "ingesting", "Fetching video metadata and downloading...", 15)
         video_id = extract_video_id(req.youtube_url)
-        meta = fetch_metadata(req.youtube_url)
-        
-        # Save metadata to DB
+
+        # Reuse existing metadata from DB if already ingested
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE jobs
-            SET video_id = ?, title = ?, channel = ?, duration = ?, thumbnail_url = ?
-            WHERE id = ?
-        """, (video_id, meta.title, meta.channel, meta.duration, meta.thumbnail_url, job_id))
-        conn.commit()
+        cursor.execute("SELECT title, channel, duration, thumbnail_url FROM jobs WHERE id = ?", (job_id,))
+        existing_job = cursor.fetchone()
         conn.close()
+
+        if existing_job and existing_job["title"]:
+            meta = VideoMetadata(
+                video_id=video_id,
+                url=req.youtube_url,
+                title=existing_job["title"],
+                channel=existing_job["channel"] or "Unknown",
+                duration=float(existing_job["duration"] or 0.0),
+                thumbnail_url=existing_job["thumbnail_url"] or ""
+            )
+        else:
+            meta = fetch_metadata(req.youtube_url)
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE jobs
+                SET video_id = ?, title = ?, channel = ?, duration = ?, thumbnail_url = ?
+                WHERE id = ?
+            """, (video_id, meta.title, meta.channel, meta.duration, meta.thumbnail_url, job_id))
+            conn.commit()
+            conn.close()
 
         video_path = download_video(req.youtube_url)
         update_job_status(job_id, "transcribing", "Extracting word-level transcript...", 35)

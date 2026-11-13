@@ -116,3 +116,37 @@ def resume_job(job_id: str):
     )
     executor.submit(execute_job_pipeline, job_id, req)
     return {"message": "Job resumed successfully", "job_id": job_id}
+
+@router.post("/{job_id}/reclip")
+def reclip_job(job_id: str, min_duration: float = 20.0, max_duration: float = 45.0, target_count: int = 6):
+    """
+    Re-runs the new smart viral clip discovery on an existing job.
+    Uses already-cached video & transcript to finish in seconds without re-downloading.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    # Clear old clips
+    cursor.execute("DELETE FROM clips WHERE job_id = ?", (job_id,))
+    cursor.execute("UPDATE jobs SET status = 'queued', current_step = 'Re-analyzing with new AI engine...', progress_pct = 10 WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    req = JobCreateRequest(
+        youtube_url=row["youtube_url"],
+        llm_provider=row["llm_provider"] or "gemini",
+        min_clip_duration=min_duration,
+        max_clip_duration=max_duration,
+        num_clips_target=target_count,
+        enable_face_tracking=True,
+        enable_loudnorm=True,
+        enable_hook_overlay=True
+    )
+    executor.submit(execute_job_pipeline, job_id, req)
+    return {"message": "Re-clipping with new AI engine started", "job_id": job_id}
+

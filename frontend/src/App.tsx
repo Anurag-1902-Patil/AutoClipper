@@ -6,7 +6,7 @@ import { DashboardView } from './components/DashboardView';
 import { EditorView } from './components/EditorView';
 import { ExportView } from './components/ExportView';
 import { Job, Clip } from './types';
-import { createJob, getJob } from './services/api';
+import { createJob, getJob, reclipJob } from './services/api';
 
 export function App() {
   const [currentView, setCurrentView] = useState<'home' | 'processing' | 'dashboard' | 'editor' | 'export'>('home');
@@ -55,6 +55,16 @@ export function App() {
     } catch {}
   };
 
+  const handleReclipJob = async () => {
+    if (!currentJob) return;
+    try {
+      await reclipJob(currentJob.id, 20, 45, 6);
+      setCurrentView('processing');
+    } catch (e: any) {
+      alert(e.message || 'Failed to re-mine clips');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0b0f19] text-slate-100 flex flex-col font-sans">
       <Navbar
@@ -89,6 +99,7 @@ export function App() {
             onEditClip={handleEditClip}
             onGoToExport={() => setCurrentView('export')}
             onRefreshJob={refreshCurrentJob}
+            onReclip={handleReclipJob}
           />
         )}
 

@@ -44,6 +44,22 @@ export async function resumeJob(jobId: string): Promise<{ message: string }> {
   return res.json();
 }
 
+export async function reclipJob(
+  jobId: string,
+  minDuration: number = 20,
+  maxDuration: number = 45,
+  targetCount: number = 6
+): Promise<{ message: string; job_id: string }> {
+  const params = new URLSearchParams({
+    min_duration: minDuration.toString(),
+    max_duration: maxDuration.toString(),
+    target_count: targetCount.toString(),
+  });
+  const res = await fetch(`${BASE_URL}/api/jobs/${jobId}/reclip?${params.toString()}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to re-clip job');
+  return res.json();
+}
+
 export async function updateClip(clipId: string, updates: Partial<Clip>): Promise<{ message: string }> {
   const res = await fetch(`${BASE_URL}/api/clips/${clipId}`, {
     method: 'PATCH',
