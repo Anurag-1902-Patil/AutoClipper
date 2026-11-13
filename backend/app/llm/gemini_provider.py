@@ -8,6 +8,8 @@ from backend.app.llm.base import LLMProvider
 logger = logging.getLogger("clipper.gemini")
 
 class GeminiProvider(LLMProvider):
+    _exhausted_models = set()
+
     def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-3.6-flash"):
         super().__init__(model_name=model_name)
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
@@ -15,11 +17,30 @@ class GeminiProvider(LLMProvider):
             raise ValueError("GEMINI_API_KEY is not set in environment or settings.")
 
     def _call_api(self, prompt: str, system_instruction: Optional[str] = None) -> Tuple[str, int, int]:
-        # Models to try in order if 503 high demand occurs
-        models_to_try: List[str] = [self.model_name]
-        for candidate in ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash"]:
-            if candidate not in models_to_try:
+        # Candidate models to try in order if quota limit or high demand occurs
+        candidates = [
+            self.model_name,
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash"
+        ]
+        
+        # Filter out models that already hit 429 quota exhaustion in this session
+        models_to_try: List[str] = []
+        for candidate in candidates:
+            if candidate not in models_to_try and candidate not in self._exhausted_models:
                 models_to_try.append(candidate)
+        
+        # If all candidates are marked exhausted, try them anyway as a last resort
+        if not models_to_try:
+            for candidate in candidates:
+                if candidate not in models_to_try:
+                    models_to_try.append(candidate)
 
         last_error_text = ""
         max_attempts_per_model = 3
@@ -40,7 +61,13 @@ class GeminiProvider(LLMProvider):
                 try:
                     resp = requests.post(url, json=payload, timeout=90)
                     
-                    if resp.status_code in [503, 429, 500]:
+                    if resp.status_code == 429:
+                        GeminiProvider._exhausted_models.add(model)
+                        logger.warning(f"Gemini {model} returned HTTP 429 (Quota limit). Switching immediately to fallback model...")
+                        last_error_text = resp.text
+                        break
+
+                    if resp.status_code in [503, 500]:
                         wait_sec = (attempt + 1) * 3
                         logger.warning(
                             f"Gemini {model} returned HTTP {resp.status_code} (Demand spike). "
