@@ -77,6 +77,7 @@ class SubtitlePreset(BaseModel):
     keyword_emphasis: bool = True
     words_per_line: int = 3
     max_lines: int = 2
+    sync_offset_ms: Optional[int] = 0
 
 class JobCreateRequest(BaseModel):
     youtube_url: str

@@ -50,6 +50,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
   const [enableHookOverlay, setEnableHookOverlay] = useState(Boolean(clip.enable_hook_overlay));
   const [enableLoudnorm, setEnableLoudnorm] = useState(Boolean(clip.enable_loudnorm));
   const [enableSilenceRemoval, setEnableSilenceRemoval] = useState(Boolean(clip.enable_silence_removal));
+  const [syncOffsetMs, setSyncOffsetMs] = useState<number>(clip.subtitle_settings?.sync_offset_ms || 0);
 
   // Subtitle styling state
   const [presets, setPresets] = useState<SubtitlePreset[]>([]);
@@ -157,7 +158,10 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
         hook_text: hookText,
         words: words,
         subtitle_preset_id: activePresetId,
-        subtitle_settings: customStyle,
+        subtitle_settings: {
+          ...customStyle,
+          sync_offset_ms: syncOffsetMs,
+        },
         enable_hook_overlay: enableHookOverlay,
         enable_silence_removal: enableSilenceRemoval,
         enable_loudnorm: enableLoudnorm,
@@ -172,9 +176,16 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
     }
   };
 
-  // Filter words belonging to this clip
+  // Filter words belonging to this clip (purge >> or > artifacts)
   const clipWords = useMemo(() => {
-    return words.filter((w) => w.end >= actualStart && w.start <= actualEnd);
+    return words
+      .filter((w) => w.end >= actualStart && w.start <= actualEnd)
+      .filter((w) => !/^(?:>>+|>+|»)\s*$/.test(w.word.trim()))
+      .map((w) => ({
+        ...w,
+        word: w.word.replace(/^(?:>>+|>+|»)\s*/, '').trim(),
+      }))
+      .filter((w) => w.word.length > 0);
   }, [words, actualStart, actualEnd]);
 
   // NATURAL PHRASE GROUPING
@@ -242,36 +253,48 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
     return list;
   }, [clipWords, words, actualStart, clipDuration, customStyle.words_per_line]);
 
+  // EFFECTIVE CURRENT TIME WITH SYNC OFFSET
+  const effectiveCurrentTime = Math.max(0, currentTime - (syncOffsetMs / 1000.0));
+
   // ACTIVE PHRASE FOR LIVE SUBTITLE OVERLAY
   const currentActivePhrase = useMemo(() => {
     if (phrases.length === 0) return null;
     // Exact match
-    const exact = phrases.find((p) => currentTime >= p.start && currentTime <= p.end);
+    const exact = phrases.find((p) => effectiveCurrentTime >= p.start && effectiveCurrentTime <= p.end);
     if (exact) return exact;
 
     // Small bridge latching: if video currentTime is within 0.3s after a phrase, keep it visible
-    const prev = [...phrases].reverse().find((p) => currentTime >= p.end && currentTime - p.end < 0.35);
+    const prev = [...phrases].reverse().find((p) => effectiveCurrentTime >= p.end && effectiveCurrentTime - p.end < 0.35);
     if (prev) return prev;
 
     return null;
-  }, [phrases, currentTime]);
+  }, [phrases, effectiveCurrentTime]);
 
   // ACTIVE WORD WITHIN ACTIVE PHRASE
   const activeWordInPhraseIndex = useMemo(() => {
     if (!currentActivePhrase) return -1;
     const idx = currentActivePhrase.words.findIndex(
-      (item) => currentTime >= item.relStart && currentTime <= item.relEnd
+      (item) => effectiveCurrentTime >= item.relStart && effectiveCurrentTime <= item.relEnd
     );
     if (idx !== -1) return idx;
 
-    // In a micro gap between words, highlight the most recent spoken word
+    // If before the first word of the phrase, do NOT highlight early
+    if (currentActivePhrase.words.length > 0 && effectiveCurrentTime < currentActivePhrase.words[0].relStart) {
+      return -1;
+    }
+
+    // In a micro gap between words (<0.22s), keep the most recently spoken word active
     const recent = [...currentActivePhrase.words]
-      .map((item, i) => ({ i, relStart: item.relStart }))
-      .filter((item) => currentTime >= item.relStart)
+      .map((item, i) => ({ i, relStart: item.relStart, relEnd: item.relEnd }))
+      .filter((item) => effectiveCurrentTime >= item.relStart)
       .pop();
 
-    return recent ? recent.i : 0;
-  }, [currentActivePhrase, currentTime]);
+    if (recent && effectiveCurrentTime - recent.relEnd < 0.22) {
+      return recent.i;
+    }
+
+    return -1;
+  }, [currentActivePhrase, effectiveCurrentTime]);
 
   // EDIT PHRASE TEXT
   const handlePhraseTextChange = (phrase: SubtitlePhrase, newText: string) => {
@@ -784,6 +807,62 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                 </div>
               </div>
 
+              {/* Subtitle Audio Sync Calibration Slider */}
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300">
+                    <Volume2 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Subtitle Audio Sync Offset</span>
+                  </div>
+                  <span className={`text-xs font-mono font-bold ${syncOffsetMs === 0 ? 'text-slate-400' : 'text-emerald-400'}`}>
+                    {syncOffsetMs > 0 ? `+${syncOffsetMs}ms (delay)` : syncOffsetMs < 0 ? `${syncOffsetMs}ms (earlier)` : '0ms (in sync)'}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSyncOffsetMs((prev) => Math.max(-500, prev - 50))}
+                    className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-[11px] font-mono text-slate-300 border border-slate-700 cursor-pointer"
+                    title="Highlight 50ms earlier"
+                  >
+                    -50ms
+                  </button>
+
+                  <input
+                    type="range"
+                    min={-500}
+                    max={500}
+                    step={25}
+                    value={syncOffsetMs}
+                    onChange={(e) => setSyncOffsetMs(Number(e.target.value))}
+                    className="w-full accent-emerald-500 cursor-pointer"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => setSyncOffsetMs((prev) => Math.min(500, prev + 50))}
+                    className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-[11px] font-mono text-slate-300 border border-slate-700 cursor-pointer"
+                    title="Highlight 50ms later"
+                  >
+                    +50ms
+                  </button>
+
+                  {syncOffsetMs !== 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setSyncOffsetMs(0)}
+                      className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-400 cursor-pointer"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-500">
+                  Nudge earlier if words highlight after speech; nudge later if words highlight before speech.
+                </p>
+              </div>
+
               {/* MODE 1: PHRASE CARDS (RECOMMENDED DESCRIPT/CAPCUT STYLE) */}
               {subtitleViewMode === 'phrases' && (
                 <div className="space-y-3 max-h-[460px] overflow-y-auto pr-2">
@@ -1232,17 +1311,22 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
 
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-400 mb-1">
-                    9:16 Framing Technique
+                    9:16 Framing & Speaker Focus
                   </label>
                   <select
                     value={framingMode}
                     onChange={(e) => setFramingMode(e.target.value as any)}
                     className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white"
                   >
-                    <option value="auto_face">Intelligent Face Speaker Tracking (OpenCV)</option>
-                    <option value="blur_bg">Blurred Background Fill (Best for Slides & Gameplay)</option>
+                    <option value="auto_face">AI Smart Framing (Avoids Table Mic)</option>
+                    <option value="blur_bg">Blurred Background Fill (Best for 2-Person Podcasts - Shows Both)</option>
+                    <option value="focus_left">Focus Left Speaker (Host)</option>
+                    <option value="focus_right">Focus Right Speaker (Guest)</option>
                     <option value="center">Fixed Center Crop</option>
                   </select>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Tip: If a tabletop microphone is in the center between two speakers, select <b>Blurred Background Fill</b> to see both people, or <b>Focus Left/Right</b> to lock onto one speaker!
+                  </p>
                 </div>
 
                 <div className="space-y-2.5 pt-2">

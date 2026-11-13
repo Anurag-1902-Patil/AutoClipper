@@ -37,6 +37,7 @@ export interface SubtitlePreset {
   keyword_emphasis: boolean;
   words_per_line: number;
   max_lines: number;
+  sync_offset_ms?: number;
 }
 
 export interface Clip {

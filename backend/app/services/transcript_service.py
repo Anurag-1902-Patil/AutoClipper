@@ -1,6 +1,7 @@
 import json
 import re
 import os
+import html
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import yt_dlp
@@ -11,6 +12,27 @@ from backend.app.config import TRANSCRIPTS_PATH, TEMP_PATH
 from backend.app.models.schemas import WordItem, SentenceItem, TranscriptData
 
 PUNCTUATION_ENDINGS = ('.', '!', '?', '।', '۔')  # includes Devanagari danda
+
+def sanitize_caption_text(text: str) -> str:
+    """
+    Remove YouTube speaker turn arrows (>> or >), bracketed audio cues ([Music], [Applause]),
+    and unescape HTML entities.
+    """
+    if not text:
+        return ""
+    # Unescape HTML entities like &#39;, &amp;, &quot;
+    cleaned = html.unescape(text)
+    # Remove bracketed sound effects like [Music], [Applause], [Laughter], (Music), etc.
+    cleaned = re.sub(r'\[(?:Music|Applause|Laughter|Cheering|Audio|Silence|Inaudible|Whispering|Foreign|Background)[^\]]*\]', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\((?:Music|Applause|Laughter|Cheering|Audio|Silence|Inaudible|Whispering)[^\)]*\)', '', cleaned, flags=re.IGNORECASE)
+    # Remove YouTube speaker change arrows >> or >
+    cleaned = re.sub(r'(?:^|\s)>>+\s*', ' ', cleaned)
+    cleaned = re.sub(r'(?:^|\s)>+\s*', ' ', cleaned)
+    # Remove standalone >> or >
+    cleaned = re.sub(r'^[>»\s]+|[>»\s]+$', '', cleaned)
+    # Collapse extra whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
 
 def parse_json3_subtitles(json3_path: Path) -> List[WordItem]:
     """
@@ -31,15 +53,15 @@ def parse_json3_subtitles(json3_path: Path) -> List[WordItem]:
         segs = ev['segs']
         # Check if segs has word-level chunks or full sentence
         for i, seg in enumerate(segs):
-            text = seg.get('utf8', '').strip()
-            if not text or text == '\n':
+            text = sanitize_caption_text(seg.get('utf8', ''))
+            if not text:
                 continue
             
             offset_ms = seg.get('tOffsetMs', 0)
             word_start = base_start + (offset_ms / 1000.0)
             
             # If the segment contains multiple space-separated words, subdivide it
-            tokenized_words = text.split()
+            tokenized_words = [w for w in text.split() if w not in (">>", ">", ">>>", "»")]
             if len(tokenized_words) > 1:
                 # Interpolate across the segment duration
                 if i + 1 < len(segs) and 'tOffsetMs' in segs[i + 1]:
@@ -59,17 +81,18 @@ def parse_json3_subtitles(json3_path: Path) -> List[WordItem]:
                         end=round(max(curr_w_end, curr_w_start + 0.1), 3)
                     ))
                     curr_w_start = curr_w_end
-            else:
+            elif len(tokenized_words) == 1:
                 # Single word segment
+                single_w = tokenized_words[0]
                 if i + 1 < len(segs) and 'tOffsetMs' in segs[i + 1]:
                     next_offset = segs[i + 1]['tOffsetMs'] / 1000.0
                     word_end = base_start + next_offset
                 else:
-                    est_dur = max(0.2, min(0.8, len(text) * 0.05))
+                    est_dur = max(0.2, min(0.8, len(single_w) * 0.05))
                     word_end = min(base_start + total_duration, word_start + est_dur)
 
                 words.append(WordItem(
-                    word=text,
+                    word=single_w,
                     start=round(word_start, 3),
                     end=round(max(word_end, word_start + 0.1), 3)
                 ))
@@ -95,9 +118,13 @@ def interpolate_words_from_snippets(snippets: List[Any]) -> List[WordItem]:
 
         if not text:
             continue
+
+        text = sanitize_caption_text(text)
+        if not text:
+            continue
         seg_end = seg_start + seg_dur
 
-        raw_words = text.split()
+        raw_words = [w for w in text.split() if w not in (">>", ">", ">>>", "»")]
         if not raw_words:
             continue
 

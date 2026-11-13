@@ -207,13 +207,16 @@ def group_words_into_subtitle_lines(
     """
     clip_words = []
     for w in words:
+        clean_w = re.sub(r'^(?:>>+|>+)\s*', '', w.word).strip()
+        if not clean_w or clean_w in (">>", ">", ">>>", "»"):
+            continue
         # Check if word overlaps with clip interval
         if w.end >= clip_start and w.start <= clip_end:
             # Re-align relative to clip start
             rel_start = max(0.0, w.start - clip_start)
             rel_end = max(rel_start + 0.1, w.end - clip_start)
             clip_words.append(WordItem(
-                word=w.word,
+                word=clean_w,
                 start=round(rel_start, 2),
                 end=round(rel_end, 2),
                 confidence=w.confidence,
@@ -282,6 +285,20 @@ def generate_ass_subtitles(
     - Safe zones (keeping out of bottom 20% & right edge)
     - High-impact animated styles (karaoke, pop, bounce, typewriter, fade, hormozi)
     """
+    # Apply timing sync offset if configured
+    offset_sec = (getattr(preset, 'sync_offset_ms', 0) or 0) / 1000.0
+    if offset_sec != 0.0:
+        words = [
+            WordItem(
+                word=w.word,
+                start=max(0.0, round(w.start + offset_sec, 3)),
+                end=max(0.08, round(w.end + offset_sec, 3)),
+                confidence=w.confidence,
+                is_emphasized=w.is_emphasized
+            )
+            for w in words
+        ]
+
     groups = group_words_into_subtitle_lines(
         words=words,
         clip_start=clip_start,

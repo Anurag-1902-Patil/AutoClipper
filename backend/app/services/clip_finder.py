@@ -15,11 +15,13 @@ def format_timestamp(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 def format_transcript_with_timestamps(transcript: TranscriptData) -> str:
-    """Format sentences with [MM:SS] timestamp headers for high LLM temporal accuracy."""
+    """Format sentences with [MM:SS] timestamp headers and [QUESTION] markers for high LLM temporal accuracy."""
     lines = []
     for s in transcript.sentences:
         ts = format_timestamp(s.start)
-        lines.append(f"[{ts}] ({s.start:.1f}s - {s.end:.1f}s): {s.text}")
+        clean_text = s.text.strip()
+        tag = " [QUESTION]" if clean_text.endswith("?") else ""
+        lines.append(f"[{ts}] ({s.start:.1f}s - {s.end:.1f}s){tag}: {clean_text}")
     return "\n".join(lines)
 
 def find_clips(

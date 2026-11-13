@@ -49,7 +49,11 @@ def render_clip_mp4(
 
     # Step 1: Speaker face tracking analysis if auto_face
     speaker_x = 0.5
-    if framing_mode == "auto_face":
+    if framing_mode == "focus_left":
+        speaker_x = 0.26
+    elif framing_mode == "focus_right":
+        speaker_x = 0.74
+    elif framing_mode == "auto_face":
         norm_x, rec = tracker.analyze_speaker_framing(
             video_path=source_video_path,
             start_time=clip.start_time,
@@ -57,7 +61,8 @@ def render_clip_mp4(
         )
         if norm_x is not None:
             speaker_x = norm_x
-        if rec == "blur_bg" and norm_x is None:
+        # If dual-speaker wide shot is detected, automatically switch to blur_bg
+        if rec == "blur_bg":
             framing_mode = "blur_bg"
 
     # Step 2: Generate ASS Subtitles
@@ -91,8 +96,7 @@ def render_clip_mp4(
             f"subtitles='{escaped_ass}'"
         )
     else:
-        # auto_face speaker centering
-        # Crop width is ih * 9/16, centered horizontally at speaker_x
+        # speaker centering (auto_face, focus_left, or focus_right)
         vf_chain = (
             f"crop=w=ih*9/16:h=ih:x='max(0,min(iw-ow,iw*{speaker_x:.3f}-ow/2))':y=0,"
             f"scale=1080:1920:flags=lanczos,setsar=1,"
@@ -107,10 +111,11 @@ def render_clip_mp4(
         af_filters.append("loudnorm=I=-16:TP=-1.5:LRA=11")
     af_chain = ",".join(af_filters) if af_filters else "anull"
 
-    # Step 5: Execute FFmpeg
+    # Step 5: Execute FFmpeg with accurate seeking
     cmd = [
         "ffmpeg",
         "-y",
+        "-accurate_seek",
         "-ss", f"{clip.start_time:.3f}",
         "-to", f"{clip.end_time:.3f}",
         "-i", str(source_video_path),

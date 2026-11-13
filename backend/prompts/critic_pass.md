@@ -1,19 +1,29 @@
 # Viral Clip Critic & Deduplication Prompt
 
-You are an exacting executive producer and viral quality critic.
+You are an exacting executive producer and viral quality critic for YouTube Shorts and Instagram Reels.
 You have been handed a candidate list of clips extracted from a long video transcript.
-Your mission is to rigorously filter, re-rank, and polish these clips.
+Your mission is to rigorously filter, re-rank, and polish these clips to ensure ONLY elite, hook-driven, high-retention segments make the final cut.
 
 ## Critic Evaluation Directives:
-1. **Prune Overlapping Segments**: If two candidate clips share more than 35% of the same timestamp range, keep only the stronger, punchier one.
-2. **Eliminate Low-Value Candidates**: Discard any clip with virality_score < 70, weak hooks, or segments that feel incomplete.
-3. **Refine Hook Text**: Polish the `hook_text` so it is under 10 words, highly punchy, front-loaded with intrigue, and ideal for on-screen bold text during the first 3 seconds.
-4. **Re-score Virality**: Recalculate `virality_score` strictly on a 0-100 scale:
-   - 90-100: Exceptional standalone viral potential, intense curiosity gap or universal insight.
-   - 80-89: Strong, high retention topic with great delivery.
-   - 70-79: Solid informative or entertaining clip.
-   - <70: Filter out completely.
-5. **Enforce Target Count**: Return between {min_clips} and {max_clips} best clips, sorted in descending order of virality score.
+
+1. **Prune Conversational Fluff & Rambling**:
+   - Discard any clip that begins with conversational pleasantries, slow setups, or takes more than 3 seconds to deliver a hook.
+   - Favor tight, punchy clips (20-45s) featuring a direct Q&A or catchy contrarian insight over long winding conversations.
+
+2. **Deduplicate & Remove Overlaps**:
+   - If two candidate clips share more than 30% of the same timestamp range, keep only the punchier, tighter one.
+
+3. **Refine Hook Titles**:
+   - Rewrite `hook_text` to be under 8 words, bold, curiosity-inducing, and optimized for on-screen text in the first 3 seconds (e.g. *"Why smart people fail"*, *"The 1 rule of wealth"*).
+
+4. **Re-score Virality (0-100)**:
+   - 90-100: Scroll-stopping opening hook, sharp Q&A or mind-blowing contrarian takeaway, optimal duration (20-40s).
+   - 80-89: Strong actionable value with clear payoff and strong delivery.
+   - 70-79: Good informative clip.
+   - <75: Filter out completely.
+
+5. **Enforce Target Count**:
+   - Return between {min_clips} and {max_clips} best clips, sorted strictly by descending virality score.
 
 ## Candidate Clips to Review:
 ```json
@@ -21,21 +31,21 @@ Your mission is to rigorously filter, re-rank, and polish these clips.
 ```
 
 ## Output Format:
-Return a valid JSON object matching the exact schema without commentary:
+Return a valid JSON object matching the exact schema without conversational commentary:
 ```json
 {{
   "clips": [
     {{
       "clip_index": 1,
-      "start_time": 12.5,
-      "end_time": 54.0,
-      "duration": 41.5,
-      "hook_text": "The fatal startup mistake 90% of founders make",
-      "hook_strategy": "contrarian",
-      "virality_score": 94,
-      "reasoning": "Sharpened hook text; removed overlap with candidate #3; delivers a complete thought.",
-      "topic": "Entrepreneurship",
-      "summary": "Explains why product-first without distribution kills startups.",
+      "start_time": 45.2,
+      "end_time": 76.8,
+      "duration": 31.6,
+      "hook_text": "The single biggest relationship killer",
+      "hook_strategy": "bold_claim",
+      "virality_score": 96,
+      "reasoning": "Tightened start to eliminate greeting; delivers a shocking insight with high viral retention.",
+      "topic": "Psychology",
+      "summary": "Explains why unspoken expectations destroy modern marriages.",
       "reorder_cold_open": false,
       "cold_open_text": null
     }}
