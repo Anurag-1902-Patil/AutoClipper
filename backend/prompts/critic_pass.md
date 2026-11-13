@@ -22,8 +22,9 @@ Your mission is to rigorously filter, re-rank, and polish these clips to ensure 
    - 70-79: Good informative clip.
    - <75: Filter out completely.
 
-5. **Enforce Target Count**:
+5. **Enforce Target Count & Clean Plain Text**:
    - Return between {min_clips} and {max_clips} best clips, sorted strictly by descending virality score.
+   - Refine `hook_text` to be pure plain text (< 8 words). NEVER use markdown asterisks (`**`), quotes, or "HOOK:" prefixes.
 
 ## Candidate Clips to Review:
 ```json

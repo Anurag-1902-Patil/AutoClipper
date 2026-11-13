@@ -36,6 +36,17 @@ interface SubtitlePhrase {
 
 const roundTo2 = (num: number) => Math.round(num * 100) / 100;
 
+export const cleanHookText = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/\*/g, '')
+    .replace(/`/g, '')
+    .replace(/^hook:\s*/i, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
+};
+
 export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, onRefreshJob }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -45,7 +56,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
   const [words, setWords] = useState<WordItem[]>(clip.words || []);
   const [trimStart, setTrimStart] = useState(clip.trim_start_offset || 0);
   const [trimEnd, setTrimEnd] = useState(clip.trim_end_offset || 0);
-  const [hookText, setHookText] = useState(clip.hook_text || '');
+  const [hookText, setHookText] = useState(cleanHookText(clip.hook_text || ''));
   const [framingMode, setFramingMode] = useState(clip.framing_mode || 'auto_face');
   const [enableHookOverlay, setEnableHookOverlay] = useState(Boolean(clip.enable_hook_overlay));
   const [enableLoudnorm, setEnableLoudnorm] = useState(Boolean(clip.enable_loudnorm));
@@ -526,15 +537,24 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
             {/* Gradient shadow scrim at bottom to guarantee high contrast on bright videos */}
             <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none z-10" />
 
-            {/* Top Hook Overlay Banner (first 3.2s of clip) */}
-            {enableHookOverlay && currentTime <= 3.2 && hookText && (
-              <div className="relative z-20 mx-4 mt-8 p-3 rounded-xl bg-slate-950/85 border border-emerald-500/40 backdrop-blur-md shadow-2xl animate-in fade-in zoom-in-95 duration-200 text-center">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-emerald-400 block mb-0.5">
-                  ★ HOOK
+            {/* Clean Opening Hook Subtitle (First 3.0s of clip) - Authentic typography, no AI card */}
+            {enableHookOverlay && currentTime <= 3.0 && cleanHookText(hookText) && (
+              <div className="absolute top-10 inset-x-4 z-20 pointer-events-none text-center animate-in fade-in zoom-in-95 duration-200">
+                <span
+                  className="inline-block px-3 py-1 text-base sm:text-lg font-black text-white uppercase tracking-wide"
+                  style={{
+                    fontFamily:
+                      customStyle.font_family === 'Montserrat'
+                        ? "'Montserrat', sans-serif"
+                        : customStyle.font_family === 'Noto Sans Devanagari'
+                        ? "'Noto Sans Devanagari', sans-serif"
+                        : customStyle.font_family,
+                    textShadow:
+                      '0 2px 4px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.8), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
+                  }}
+                >
+                  {cleanHookText(hookText)}
                 </span>
-                <p className="text-sm font-black text-white leading-tight font-montserrat uppercase drop-shadow">
-                  {hookText}
-                </p>
               </div>
             )}
 
@@ -728,12 +748,13 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
               {/* Hook text banner */}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Hook Title Banner (First 3s on-screen teaser)
+                  Opening Hook Subtitle (First 3s teaser)
                 </label>
                 <input
                   type="text"
                   value={hookText}
-                  onChange={(e) => setHookText(e.target.value)}
+                  onChange={(e) => setHookText(cleanHookText(e.target.value))}
+                  placeholder="e.g. Your judgment exposes your shame"
                   className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-bold focus:ring-1 focus:ring-emerald-500"
                 />
               </div>
@@ -1337,7 +1358,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                       onChange={(e) => setEnableHookOverlay(e.target.checked)}
                       className="rounded accent-emerald-500"
                     />
-                    <span>Burn 3-second Animated Hook Title at start</span>
+                    <span>Show Hook Title Subtitle for first 3s</span>
                   </label>
 
                   <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">

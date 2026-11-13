@@ -41,7 +41,8 @@ Your mission is to mine this long podcast / interview transcript and extract the
    - Snap `start_time` directly to the exact word where the question or provocative hook statement begins!
 2. **Hook in the First 3 Seconds**:
    - The opening line MUST spark immediate curiosity or emotion.
-   - Formulate a punchy `hook_text` (< 8 words) for the on-screen bold title (e.g., *"The #1 Lie About Success"*).
+   - Formulate a punchy `hook_text` (< 8 words) for the on-screen opening subtitle (e.g., *The #1 Lie About Success*).
+   - CRITICAL: `hook_text` must be plain text only. NEVER use markdown asterisks (`**`), quotes, or labels like "HOOK:".
 3. **Clean Conclusion**:
    - Snap `end_time` to the sentence boundary right after the punchline or conclusion. Never cut off mid-thought.
 4. **Boundary Snapping**:

@@ -150,26 +150,33 @@ def format_ass_time(seconds: float) -> str:
 
 def append_hook_overlay_to_ass(ass_path: Path, hook_text: str, duration_sec: float = 3.0):
     """
-    Appends a hook banner to the ASS script for the first ~3.0 seconds,
-    framed near the top safe zone in bold with a vibrant glow.
+    Appends clean opening hook text to the ASS script for the first ~3.0 seconds,
+    styled as authentic high-contrast subtitle typography without any artificial badges.
     """
     if not hook_text:
         return
 
+    # Strip any markdown asterisks, quotes, or labels
+    clean_text = hook_text.replace("**", "").replace("*", "").replace("`", "").strip(' "\'')
+    if clean_text.lower().startswith("hook:"):
+        clean_text = clean_text[5:].strip()
+    if not clean_text:
+        return
+
     hook_style = (
-        "Style: HookHeader,Montserrat,68,&H00FFFFFF&,&H0000DFEF&,&H00000000&,&H80000000&,"
-        "-1,0,0,0,100,100,0,0,1,6,4,8,80,80,220,1\n"
+        "Style: HookHeader,Montserrat,64,&H00FFFFFF&,&H00000000&,&H00000000&,&H80000000&,"
+        "-1,0,0,0,100,100,0,0,1,5,3,8,80,80,160,1\n"
     )
 
     t_start = "0:00:00.00"
     t_end = format_ass_time(duration_sec)
 
-    words = hook_text.split()
+    words = clean_text.split()
     if len(words) > 5:
         mid = len(words) // 2
         formatted_text = " ".join(words[:mid]) + r"\N" + " ".join(words[mid:])
     else:
-        formatted_text = hook_text
+        formatted_text = clean_text
 
     dialogue_entry = (
         f"Dialogue: 1,{t_start},{t_end},HookHeader,,0,0,0,,"

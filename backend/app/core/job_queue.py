@@ -138,6 +138,11 @@ def execute_job_pipeline(job_id: str, req: JobCreateRequest):
 
         for c in clips:
             clip_db_id = str(uuid.uuid4())
+            # Clean hook text of any markdown or robotic labels
+            clean_hook = c.hook_text.replace("**", "").replace("*", "").replace("`", "").strip(' "\'')
+            if clean_hook.lower().startswith("hook:"):
+                clean_hook = clean_hook[5:].strip()
+
             # Generate SEO
             try:
                 seo = generate_clip_seo(c, transcript.words, llm, cost_tracker)
@@ -145,11 +150,11 @@ def execute_job_pipeline(job_id: str, req: JobCreateRequest):
             except Exception as e:
                 logger.warning(f"SEO generation failed for clip {c.clip_index}: {e}")
                 seo_json = json.dumps({
-                    "yt_title": f"{c.hook_text} #Shorts",
+                    "yt_title": f"{clean_hook} #Shorts",
                     "yt_description": f"{c.summary}\nSubscribe for more!",
                     "yt_hashtags": ["#Shorts", "#Viral", "#Trending"],
                     "yt_tags": [c.topic, "shorts", "reels"],
-                    "ig_caption": f"{c.hook_text}\n\n{c.summary}\n\nSave this for later 📌",
+                    "ig_caption": f"{clean_hook}\n\n{c.summary}\n\nSave this for later 📌",
                     "ig_hashtags": ["#shorts", "#reels", "#viral"],
                     "thumbnail_timestamp": 1.5,
                     "best_time_to_post": "6:00 PM - 9:00 PM"
@@ -167,7 +172,7 @@ def execute_job_pipeline(job_id: str, req: JobCreateRequest):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 clip_db_id, job_id, c.clip_index, c.start_time, c.end_time, c.duration,
-                c.hook_text, c.hook_strategy, c.virality_score, c.reasoning, c.topic, c.summary,
+                clean_hook, c.hook_strategy, c.virality_score, c.reasoning, c.topic, c.summary,
                 1, json.dumps(clip_words), req.default_preset_id, int(req.enable_hook_overlay),
                 int(req.enable_silence_removal), int(req.enable_loudnorm),
                 "auto_face" if req.enable_face_tracking else "center",
