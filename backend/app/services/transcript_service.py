@@ -76,18 +76,25 @@ def parse_json3_subtitles(json3_path: Path) -> List[WordItem]:
 
     return words
 
-def interpolate_words_from_snippets(snippets: List[Dict[str, Any]]) -> List[WordItem]:
+def interpolate_words_from_snippets(snippets: List[Any]) -> List[WordItem]:
     """
     Interpolate word-level timestamps from segment-level snippets.
     Calculates word duration proportionally to character length with pauses.
+    Supports both dicts and FetchedTranscriptSnippet objects.
     """
     words: List[WordItem] = []
     for snippet in snippets:
-        text = snippet.get('text', '').strip()
+        if isinstance(snippet, dict):
+            text = snippet.get('text', '').strip()
+            seg_start = float(snippet.get('start', 0.0))
+            seg_dur = float(snippet.get('duration', 1.0))
+        else:
+            text = (getattr(snippet, 'text', '') or '').strip()
+            seg_start = float(getattr(snippet, 'start', 0.0))
+            seg_dur = float(getattr(snippet, 'duration', 1.0))
+
         if not text:
             continue
-        seg_start = float(snippet.get('start', 0.0))
-        seg_dur = float(snippet.get('duration', 1.0))
         seg_end = seg_start + seg_dur
 
         raw_words = text.split()
@@ -156,18 +163,35 @@ def fetch_youtube_captions_via_ytdlp(video_id: str) -> Optional[List[WordItem]]:
 def fetch_youtube_captions_via_api(video_id: str) -> Optional[List[WordItem]]:
     """
     Use youtube-transcript-api to get available captions (manual or auto-generated).
+    Compatible with both v0.x and v1.x of youtube-transcript-api.
     """
     try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # v1.x class instance or v0.x module
+        if hasattr(YouTubeTranscriptApi, 'list'):
+            api = YouTubeTranscriptApi()
+            transcript_list = api.list(video_id)
+        elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        else:
+            api = YouTubeTranscriptApi()
+            transcript_list = api.list(video_id)
         
-        # Try finding manually created or generated transcripts in popular languages
         preferred_langs = ['en', 'en-US', 'en-GB', 'hi', 'hi-Latn']
         transcript = None
 
-        try:
-            transcript = transcript_list.find_transcript(preferred_langs)
-        except Exception:
-            # Fall back to any generated transcript
+        if hasattr(transcript_list, 'find_transcript'):
+            try:
+                transcript = transcript_list.find_transcript(preferred_langs)
+            except Exception:
+                pass
+
+        if not transcript and hasattr(transcript_list, 'find_generated_transcript'):
+            try:
+                transcript = transcript_list.find_generated_transcript(preferred_langs)
+            except Exception:
+                pass
+
+        if not transcript:
             for t in transcript_list:
                 transcript = t
                 break
@@ -177,7 +201,8 @@ def fetch_youtube_captions_via_api(video_id: str) -> Optional[List[WordItem]]:
             return interpolate_words_from_snippets(snippets)
     except (TranscriptsDisabled, NoTranscriptFound):
         return None
-    except Exception:
+    except Exception as e:
+        print(f"[warning] youtube-transcript-api encountered: {e}")
         return None
 
     return None
@@ -248,12 +273,12 @@ def get_transcript(video_id: str, audio_path: Optional[Path] = None, force_refre
 
     words: Optional[List[WordItem]] = None
 
-    # Step 1: Try yt-dlp json3 subtitles for true word-level precision
-    words = fetch_youtube_captions_via_ytdlp(video_id)
+    # Step 1: Direct YouTube Transcript API (Fastest, avoids yt-dlp 429 rate limits)
+    words = fetch_youtube_captions_via_api(video_id)
 
-    # Step 2: Try youtube-transcript-api if json3 didn't yield words
+    # Step 2: Try yt-dlp json3 subtitles if api didn't yield words
     if not words or len(words) < 5:
-        words = fetch_youtube_captions_via_api(video_id)
+        words = fetch_youtube_captions_via_ytdlp(video_id)
 
     if not words:
         raise RuntimeError(
