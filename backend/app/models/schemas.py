@@ -103,3 +103,10 @@ class ClipUpdateRequest(BaseModel):
     framing_mode: Optional[str] = None  # 'auto_face', 'center', 'blur_bg'
     is_selected: Optional[bool] = None
     seo_metadata: Optional[SEOMetadata] = None
+
+class PolishSubtitlesRequest(BaseModel):
+    words: Optional[List[WordItem]] = None
+
+class PolishedSubtitlesOutput(BaseModel):
+    words: List[WordItem]
+

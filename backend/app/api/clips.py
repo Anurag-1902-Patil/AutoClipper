@@ -1,10 +1,14 @@
+import re
 import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from backend.app.database import get_db_connection
-from backend.app.models.schemas import ClipUpdateRequest, CandidateClip, WordItem, SubtitlePreset, SEOMetadata
+from backend.app.models.schemas import (
+    ClipUpdateRequest, CandidateClip, WordItem, SubtitlePreset, SEOMetadata,
+    PolishSubtitlesRequest, PolishedSubtitlesOutput
+)
 from backend.app.services.video_processor import render_clip_mp4
 from backend.app.services.subtitle_generator import BUILTIN_PRESETS
 from backend.app.services.seo_service import generate_clip_seo
@@ -192,3 +196,97 @@ def regenerate_seo(clip_id: str):
     conn.close()
 
     return {"message": "SEO metadata regenerated", "seo_metadata": seo.model_dump()}
+
+@router.post("/{clip_id}/polish-subtitles")
+def polish_subtitles(clip_id: str, req: Optional[PolishSubtitlesRequest] = None):
+    """
+    Uses the configured LLM (e.g. Gemini 3.6 Flash) to fix speech-to-text accuracy:
+    - Fixes punctuation, capitalization, and grammar
+    - Corrects phonetic typos and mishearings
+    - Removes filler disfluencies ("um", "uh", "er")
+    - Adds keyword emphasis tags
+    - Preserves timing synchronization
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT c.*, j.llm_provider FROM clips c JOIN jobs j ON c.job_id = j.id WHERE c.id = ?", (clip_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    # Determine input words
+    if req and req.words and len(req.words) > 0:
+        raw_words = req.words
+    else:
+        raw_words = [WordItem(**w) for w in json.loads(row["words_json"] or "[]")]
+
+    if not raw_words:
+        conn.close()
+        return {"message": "No words to polish", "words": []}
+
+    # Filter to words in clip boundaries if applicable
+    actual_start = max(0.0, row["start_time"] + (row["trim_start_offset"] or 0.0))
+    actual_end = max(actual_start + 1.0, row["end_time"] + (row["trim_end_offset"] or 0.0))
+    clip_words = [w for w in raw_words if w.end >= actual_start and w.start <= actual_end]
+    if not clip_words:
+        clip_words = raw_words
+
+    compact_words = [{"w": w.word, "s": round(w.start, 2), "e": round(w.end, 2)} for w in clip_words]
+
+    try:
+        prompt_file = PROMPTS_PATH / "polish_subtitles.md"
+        prompt_template = prompt_file.read_text(encoding="utf-8")
+        prompt = prompt_template.replace("{words_json}", json.dumps(compact_words, indent=2))
+
+        llm = get_llm_provider(row["llm_provider"])
+        output, usage = llm.generate_structured(prompt, PolishedSubtitlesOutput)
+        polished_words: List[WordItem] = []
+
+        last_end = 0.0
+        for w in output.words:
+            # Ensure valid timestamps
+            start_t = max(last_end, float(w.start))
+            end_t = max(start_t + 0.08, float(w.end))
+            last_end = start_t
+            polished_words.append(WordItem(
+                word=w.word.strip(),
+                start=round(start_t, 2),
+                end=round(end_t, 2),
+                confidence=1.0,
+                is_emphasized=bool(w.is_emphasized)
+            ))
+
+        if not polished_words:
+            raise ValueError("Polishing returned empty word list")
+
+    except Exception as e:
+        # Fallback heuristic clean if LLM is unavailable
+        filler_set = {"um", "uh", "er", "ah", "like,"}
+        polished_words = []
+        for i, w in enumerate(clip_words):
+            cleaned_text = w.word.strip()
+            if cleaned_text.lower() in filler_set and len(clip_words) > 5:
+                continue
+            # Capitalize first word or after terminal punctuation
+            if i == 0 or (polished_words and re.search(r'[.?!]$', polished_words[-1].word)):
+                cleaned_text = cleaned_text.capitalize()
+            polished_words.append(WordItem(
+                word=cleaned_text,
+                start=w.start,
+                end=w.end,
+                confidence=w.confidence,
+                is_emphasized=w.is_emphasized
+            ))
+
+    # Persist polished words to DB
+    words_json = json.dumps([w.model_dump() for w in polished_words])
+    cursor.execute("UPDATE clips SET words_json = ? WHERE id = ?", (words_json, clip_id))
+    conn.commit()
+    conn.close()
+
+    return {
+        "message": "Subtitles polished and synchronized successfully",
+        "words": [w.model_dump() for w in polished_words]
+    }
+

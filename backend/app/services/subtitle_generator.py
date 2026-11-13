@@ -229,9 +229,23 @@ def group_words_into_subtitle_lines(
     total_words = len(clip_words)
 
     while i < total_words:
-        # Check natural sentence/pause break in the next few words
-        count = min(words_per_line, total_words - i)
-        
+        # Determine natural grouping boundary:
+        # 1. Break at sentence ending punctuation (. ? ! …)
+        # 2. Break on pause > 0.35s between words
+        # 3. Break at comma if already >= 2 words
+        # 4. Cap at words_per_line
+        count = 1
+        while count < words_per_line and (i + count) < total_words:
+            prev_w = clip_words[i + count - 1]
+            curr_w = clip_words[i + count]
+            if re.search(r'[.?!…]$', prev_w.word.strip()):
+                break
+            if curr_w.start - prev_w.end > 0.35:
+                break
+            if re.search(r'[,;:]$', prev_w.word.strip()) and count >= 2:
+                break
+            count += 1
+
         frame_words = clip_words[i : i + count]
         frame_start = frame_words[0].start
         frame_end = frame_words[-1].end
@@ -239,8 +253,12 @@ def group_words_into_subtitle_lines(
         # Extend frame end slightly so subtitle doesn't flicker out before next word
         if i + count < total_words:
             next_start = clip_words[i + count].start
-            if next_start - frame_end < 0.35:
+            if next_start - frame_end < 0.4:
                 frame_end = next_start
+            else:
+                frame_end = min(frame_end + 0.25, next_start)
+        else:
+            frame_end = min(max(0.0, clip_end - clip_start), frame_end + 0.35)
 
         lines.append(SubtitleLineGroup(
             words=frame_words,
@@ -322,25 +340,31 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         style = preset.animation_style.lower()
 
         if style in ["karaoke", "hormozi"]:
-            # Active word color highlighting
-            # For each word in the group, we generate a dialogue slice when that word is active
+            # Active word color highlighting with smooth continuous coverage
             for active_idx, active_w in enumerate(group.words):
                 w_start = format_ass_time(active_w.start)
-                w_end = format_ass_time(active_w.end)
+                # Next word's start time or group end time ensures zero flicker during pauses
+                if active_idx + 1 < len(group.words):
+                    w_end = format_ass_time(group.words[active_idx + 1].start)
+                else:
+                    w_end = format_ass_time(group.end_time)
 
                 rendered_words = []
                 for idx, w in enumerate(group.words):
                     display_word = w.word.upper() if preset.uppercase else w.word
                     
                     if idx == active_idx:
-                        # Highlight active word with highlight color and slight scale-in
+                        # Highlight active word with highlight color and pop scale
                         if style == "hormozi":
-                            # Hormozi pop scale
-                            rendered_words.append(r"{\c" + highlight_ass + r"\t(0,120,\fscx112\fscy112)\t(120,240,\fscx100\fscy100)}" + display_word + r"{\c" + primary_ass + r"}")
+                            rendered_words.append(r"{\c" + highlight_ass + r"\t(0,100,\fscx112\fscy112)\t(100,220,\fscx100\fscy100)}" + display_word + r"{\c" + primary_ass + r"}")
                         else:
                             rendered_words.append(r"{\c" + highlight_ass + r"}" + display_word + r"{\c" + primary_ass + r"}")
                     else:
-                        rendered_words.append(r"{\c" + primary_ass + r"}" + display_word)
+                        # If emphasized word, tint it subtly with highlight color
+                        if w.is_emphasized and preset.keyword_emphasis:
+                            rendered_words.append(r"{\c" + highlight_ass + r"}" + display_word + r"{\c" + primary_ass + r"}")
+                        else:
+                            rendered_words.append(r"{\c" + primary_ass + r"}" + display_word)
 
                 line_text = " ".join(rendered_words)
                 dialogue_lines.append(f"Dialogue: 0,{w_start},{w_end},Default,,0,0,0,,{line_text}")
@@ -349,16 +373,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             # Bounce scale animation on active word
             for active_idx, active_w in enumerate(group.words):
                 w_start = format_ass_time(active_w.start)
-                w_end = format_ass_time(active_w.end)
+                if active_idx + 1 < len(group.words):
+                    w_end = format_ass_time(group.words[active_idx + 1].start)
+                else:
+                    w_end = format_ass_time(group.end_time)
 
                 rendered_words = []
                 for idx, w in enumerate(group.words):
                     display_word = w.word.upper() if preset.uppercase else w.word
                     if idx == active_idx:
-                        # Chained bounce easing
                         rendered_words.append(r"{\c" + highlight_ass + r"\t(0,100,\fscx120\fscy120)\t(100,200,\fscx95\fscy95)\t(200,300,\fscx100\fscy100)}" + display_word + r"{\c" + primary_ass + r"}")
                     else:
-                        rendered_words.append(r"{\c" + primary_ass + r"}" + display_word)
+                        if w.is_emphasized and preset.keyword_emphasis:
+                            rendered_words.append(r"{\c" + highlight_ass + r"}" + display_word + r"{\c" + primary_ass + r"}")
+                        else:
+                            rendered_words.append(r"{\c" + primary_ass + r"}" + display_word)
 
                 line_text = " ".join(rendered_words)
                 dialogue_lines.append(f"Dialogue: 0,{w_start},{w_end},Default,,0,0,0,,{line_text}")

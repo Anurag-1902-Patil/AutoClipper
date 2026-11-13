@@ -1,10 +1,14 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Play, Pause, RotateCcw, Volume2, Sparkles, Sliders, Type, Scissors,
-  Share2, Copy, Check, RefreshCw, Film, Save, CheckCircle2, ChevronRight, Eye
+  Share2, Copy, Check, RefreshCw, Film, Save, CheckCircle2, ChevronRight, Eye,
+  Wand2, Split, Merge, Trash2, List, AlignLeft, Layers
 } from 'lucide-react';
 import { Clip, WordItem, SubtitlePreset, SEOMetadata } from '../types';
-import { updateClip, renderClipPreview, regenerateClipSEO, applyPresetToAll, savePreset, getPresets } from '../services/api';
+import {
+  updateClip, renderClipPreview, regenerateClipSEO, applyPresetToAll,
+  savePreset, getPresets, polishClipSubtitles
+} from '../services/api';
 
 interface EditorViewProps {
   clip: Clip;
@@ -12,6 +16,25 @@ interface EditorViewProps {
   onBack: () => void;
   onRefreshJob: () => void;
 }
+
+interface SubtitlePhrase {
+  id: string;
+  index: number;
+  start: number; // relative to clip start (seconds)
+  end: number;   // relative to clip start (seconds, with latch)
+  rawStart: number; // absolute seconds in full video
+  rawEnd: number;
+  text: string;
+  words: {
+    word: WordItem;
+    globalIndex: number;
+    clipIndex: number;
+    relStart: number;
+    relEnd: number;
+  }[];
+}
+
+const roundTo2 = (num: number) => Math.round(num * 100) / 100;
 
 export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, onRefreshJob }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -36,7 +59,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
     name: 'Hormozi Viral',
     is_builtin: true,
     font_family: 'Montserrat',
-    font_size: 42, // UI scaled size
+    font_size: 34, // Scaled for live preview canvas
     font_weight: 'black',
     primary_color: '#FFFFFF',
     highlight_color: '#FFDF00',
@@ -66,7 +89,9 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
 
   // UI feedback states
   const [activeTab, setActiveTab] = useState<'subtitles' | 'style' | 'trim' | 'seo'>('subtitles');
+  const [subtitleViewMode, setSubtitleViewMode] = useState<'phrases' | 'words'>('phrases');
   const [isRendering, setIsRendering] = useState(false);
+  const [isPolishing, setIsPolishing] = useState(false);
   const [renderedMp4, setRenderedMp4] = useState<string | null>(clip.rendered_video_path || null);
   const [isRegeneratingSEO, setIsRegeneratingSEO] = useState(false);
   const [copiedType, setCopiedType] = useState<string | null>(null);
@@ -82,7 +107,10 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
       setPresets(list);
       const match = list.find((p) => p.id === activePresetId);
       if (match) {
-        setCustomStyle(match);
+        setCustomStyle((prev) => ({
+          ...match,
+          font_size: prev.font_size || 34,
+        }));
       }
     });
   }, [activePresetId]);
@@ -91,7 +119,6 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
     const t = videoRef.current.currentTime;
-    // Loop video within clip interval
     if (t >= actualEnd) {
       videoRef.current.currentTime = actualStart;
       setCurrentTime(0);
@@ -116,7 +143,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
 
   const handleSeek = (newRelativeTime: number) => {
     if (!videoRef.current) return;
-    const target = actualStart + newRelativeTime;
+    const target = actualStart + Math.max(0, Math.min(newRelativeTime, clipDuration));
     videoRef.current.currentTime = target;
     setCurrentTime(newRelativeTime);
   };
@@ -145,20 +172,220 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
     }
   };
 
-  // Subtitle word text inline change
-  const handleWordTextChange = (index: number, newText: string) => {
+  // Filter words belonging to this clip
+  const clipWords = useMemo(() => {
+    return words.filter((w) => w.end >= actualStart && w.start <= actualEnd);
+  }, [words, actualStart, actualEnd]);
+
+  // NATURAL PHRASE GROUPING
+  // Groups words based on punctuation, pause duration, and words_per_line
+  const phrases = useMemo<SubtitlePhrase[]>(() => {
+    if (clipWords.length === 0) return [];
+
+    const list: SubtitlePhrase[] = [];
+    const wordsPerLine = customStyle.words_per_line || 3;
+    let i = 0;
+    const total = clipWords.length;
+
+    while (i < total) {
+      let count = 1;
+      while (count < wordsPerLine && (i + count) < total) {
+        const prevW = clipWords[i + count - 1];
+        const currW = clipWords[i + count];
+        // Terminal punctuation break (. ? ! …)
+        if (/[.?!…]$/.test(prevW.word.trim())) break;
+        // Natural speech pause between words > 0.35s
+        if (currW.start - prevW.end > 0.35) break;
+        // Comma breath pause if already >= 2 words
+        if (/[,;:]$/.test(prevW.word.trim()) && count >= 2) break;
+        count++;
+      }
+
+      const phraseWords = clipWords.slice(i, i + count);
+      const phraseStart = Math.max(0, phraseWords[0].start - actualStart);
+      let phraseEnd = Math.max(phraseStart + 0.1, phraseWords[phraseWords.length - 1].end - actualStart);
+
+      // Latch phrase end so subtitle doesn't blink out during small pauses
+      if (i + count < total) {
+        const nextStart = Math.max(0, clipWords[i + count].start - actualStart);
+        if (nextStart - phraseEnd < 0.45) {
+          phraseEnd = nextStart;
+        } else {
+          phraseEnd = Math.min(phraseEnd + 0.25, nextStart);
+        }
+      } else {
+        phraseEnd = Math.min(clipDuration, phraseEnd + 0.4);
+      }
+
+      const phraseItems = phraseWords.map((w, subIdx) => ({
+        word: w,
+        globalIndex: words.indexOf(w),
+        clipIndex: i + subIdx,
+        relStart: Math.max(0, w.start - actualStart),
+        relEnd: Math.max(0, w.end - actualStart),
+      }));
+
+      list.push({
+        id: `phrase_${i}`,
+        index: list.length,
+        start: roundTo2(phraseStart),
+        end: roundTo2(phraseEnd),
+        rawStart: phraseWords[0].start,
+        rawEnd: phraseWords[phraseWords.length - 1].end,
+        text: phraseWords.map((w) => w.word).join(' '),
+        words: phraseItems,
+      });
+
+      i += count;
+    }
+
+    return list;
+  }, [clipWords, words, actualStart, clipDuration, customStyle.words_per_line]);
+
+  // ACTIVE PHRASE FOR LIVE SUBTITLE OVERLAY
+  const currentActivePhrase = useMemo(() => {
+    if (phrases.length === 0) return null;
+    // Exact match
+    const exact = phrases.find((p) => currentTime >= p.start && currentTime <= p.end);
+    if (exact) return exact;
+
+    // Small bridge latching: if video currentTime is within 0.3s after a phrase, keep it visible
+    const prev = [...phrases].reverse().find((p) => currentTime >= p.end && currentTime - p.end < 0.35);
+    if (prev) return prev;
+
+    return null;
+  }, [phrases, currentTime]);
+
+  // ACTIVE WORD WITHIN ACTIVE PHRASE
+  const activeWordInPhraseIndex = useMemo(() => {
+    if (!currentActivePhrase) return -1;
+    const idx = currentActivePhrase.words.findIndex(
+      (item) => currentTime >= item.relStart && currentTime <= item.relEnd
+    );
+    if (idx !== -1) return idx;
+
+    // In a micro gap between words, highlight the most recent spoken word
+    const recent = [...currentActivePhrase.words]
+      .map((item, i) => ({ i, relStart: item.relStart }))
+      .filter((item) => currentTime >= item.relStart)
+      .pop();
+
+    return recent ? recent.i : 0;
+  }, [currentActivePhrase, currentTime]);
+
+  // EDIT PHRASE TEXT
+  const handlePhraseTextChange = (phrase: SubtitlePhrase, newText: string) => {
+    const newTokens = newText.trim().split(/\s+/).filter(Boolean);
+    if (newTokens.length === 0) return;
+
+    const globalStartIdx = phrase.words[0].globalIndex;
+    const oldWordCount = phrase.words.length;
     const updated = [...words];
-    updated[index].word = newText;
+
+    if (newTokens.length === oldWordCount) {
+      // 1-to-1 word replacement: preserve exact start/end
+      phrase.words.forEach((item, idx) => {
+        updated[item.globalIndex] = {
+          ...updated[item.globalIndex],
+          word: newTokens[idx],
+        };
+      });
+    } else {
+      // Word count changed: evenly distribute timestamps across the phrase window
+      const pStart = phrase.rawStart;
+      const pEnd = phrase.rawEnd;
+      const totalDuration = Math.max(0.2, pEnd - pStart);
+      const wordDuration = totalDuration / newTokens.length;
+
+      const newWordItems: WordItem[] = newTokens.map((tok, idx) => ({
+        word: tok,
+        start: roundTo2(pStart + idx * wordDuration),
+        end: roundTo2(pStart + (idx + 1) * wordDuration),
+        confidence: 1.0,
+        is_emphasized: false,
+      }));
+
+      updated.splice(globalStartIdx, oldWordCount, ...newWordItems);
+    }
+
     setWords(updated);
+  };
+
+  // TOGGLE WORD EMPHASIS
+  const handleToggleWordEmphasis = (globalIndex: number) => {
+    if (globalIndex < 0 || globalIndex >= words.length) return;
+    const updated = [...words];
+    updated[globalIndex] = {
+      ...updated[globalIndex],
+      is_emphasized: !updated[globalIndex].is_emphasized,
+    };
+    setWords(updated);
+  };
+
+  // PLAY PHRASE SNIPPET
+  const handlePlayPhrase = (phrase: SubtitlePhrase) => {
+    if (!videoRef.current) return;
+    videoRef.current.currentTime = phrase.rawStart;
+    setCurrentTime(phrase.start);
+    videoRef.current.play();
+    setIsPlaying(true);
+  };
+
+  // AI POLISH SUBTITLES (GEMINI)
+  const handleAIPolishSubtitles = async () => {
+    try {
+      setIsPolishing(true);
+      setSaveStatus('✨ AI Polishing punctuation & typos with Gemini...');
+      const res = await polishClipSubtitles(clip.id, words);
+      if (res.words && res.words.length > 0) {
+        setWords(res.words);
+        setSaveStatus('✨ Subtitles polished and synchronized!');
+        setTimeout(() => setSaveStatus(null), 3500);
+        onRefreshJob();
+      }
+    } catch (e: any) {
+      alert(e.message || 'AI Subtitle Polish failed');
+    } finally {
+      setIsPolishing(false);
+    }
+  };
+
+  // QUICK CLEAN: REMOVE FILLER WORDS
+  const handleRemoveFillers = () => {
+    const fillerSet = new Set(['um', 'uh', 'er', 'ah', 'like,', 'you know,']);
+    const updated = words.filter((w) => !fillerSet.has(w.word.trim().toLowerCase()));
+    setWords(updated);
+    setSaveStatus('Filler words removed');
+    setTimeout(() => setSaveStatus(null), 2000);
+  };
+
+  // QUICK FORMAT: CAPITALIZATION
+  const handleFormatCapitalization = (mode: 'sentence' | 'upper') => {
+    const updated = words.map((w, idx) => {
+      let cleaned = w.word;
+      if (mode === 'upper') {
+        cleaned = cleaned.toUpperCase();
+      } else if (mode === 'sentence') {
+        const isStart = idx === 0 || /[.?!]$/.test(words[idx - 1].word);
+        cleaned = isStart ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1) : cleaned;
+      }
+      return { ...w, word: cleaned };
+    });
+    setWords(updated);
+    setSaveStatus(`Formatted ${mode === 'upper' ? 'UPPERCASE' : 'Sentence Case'}`);
+    setTimeout(() => setSaveStatus(null), 2000);
   };
 
   // Preset Selection
   const selectPreset = (preset: SubtitlePreset) => {
     setActivePresetId(preset.id);
-    setCustomStyle(preset);
+    setCustomStyle({
+      ...preset,
+      font_size: customStyle.font_size || 34,
+    });
   };
 
-  // Apply to all clips
+  // Apply preset to all clips
   const handleApplyToAll = async () => {
     try {
       await applyPresetToAll(clip.job_id, activePresetId);
@@ -199,27 +426,12 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
     }
   };
 
-  // One-click copy
+  // Copy to clipboard
   const copyToClipboard = (text: string, type: string) => {
     navigator.clipboard.writeText(text);
     setCopiedType(type);
     setTimeout(() => setCopiedType(null), 2000);
   };
-
-  // Filter words belonging to this clip
-  const clipWords = words.filter((w) => w.end >= actualStart && w.start <= actualEnd);
-
-  // Group active words for subtitle overlay
-  // Find which word is currently spoken (relative to clip start)
-  const activeWordIndex = clipWords.findIndex(
-    (w) => currentTime >= (w.start - actualStart) && currentTime <= (w.end - actualStart)
-  );
-
-  // Compute a 3-word window around the active word
-  const activeWindowStart = Math.max(0, Math.floor(activeWordIndex / 3) * 3);
-  const currentDisplayWords = activeWordIndex !== -1
-    ? clipWords.slice(activeWindowStart, activeWindowStart + 3)
-    : [];
 
   return (
     <div className="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
@@ -238,7 +450,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                 Clip #{clip.clip_index}
               </span>
               <span className="text-xs font-mono text-slate-400">
-                {clipDuration.toFixed(1)}s (from {actualStart.toFixed(1)}s to {actualEnd.toFixed(1)}s)
+                {clipDuration.toFixed(1)}s ({actualStart.toFixed(1)}s - {actualEnd.toFixed(1)}s)
               </span>
             </div>
             <h2 className="text-sm sm:text-base font-bold text-white truncate max-w-lg mt-0.5">
@@ -288,9 +500,12 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
               playsInline
             />
 
+            {/* Gradient shadow scrim at bottom to guarantee high contrast on bright videos */}
+            <div className="absolute inset-x-0 bottom-0 h-48 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none z-10" />
+
             {/* Top Hook Overlay Banner (first 3.2s of clip) */}
             {enableHookOverlay && currentTime <= 3.2 && hookText && (
-              <div className="relative z-20 mx-4 mt-8 p-3 rounded-xl bg-slate-950/80 border border-emerald-500/40 backdrop-blur-md shadow-2xl animate-in fade-in zoom-in-95 duration-200 text-center">
+              <div className="relative z-20 mx-4 mt-8 p-3 rounded-xl bg-slate-950/85 border border-emerald-500/40 backdrop-blur-md shadow-2xl animate-in fade-in zoom-in-95 duration-200 text-center">
                 <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-emerald-400 block mb-0.5">
                   ★ HOOK
                 </span>
@@ -300,53 +515,71 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
               </div>
             )}
 
-            {/* LIVE REAL-TIME SUBTITLE OVERLAY */}
+            {/* LIVE ROCK-SOLID SUBTITLE OVERLAY (NO FLICKER) */}
             <div
-              className={`relative z-20 px-4 pointer-events-none transition-all duration-150 flex flex-col items-center text-center ${
+              className={`absolute inset-x-0 z-20 px-4 pointer-events-none transition-all duration-150 flex flex-col items-center text-center ${
                 customStyle.position === 'top'
-                  ? 'mt-16'
+                  ? 'top-20'
                   : customStyle.position === 'middle'
-                  ? 'my-auto'
-                  : 'mb-16' // Safe zone above Shorts/Reels overlay
+                  ? 'top-1/2 -translate-y-1/2'
+                  : 'bottom-20' // Safe zone above Shorts/Reels captions
               }`}
             >
-              {currentDisplayWords.length > 0 && (
+              {currentActivePhrase && (
                 <div
-                  className={`inline-block px-4 py-2 rounded-xl text-center leading-snug transition-transform ${
-                    customStyle.bg_box ? 'bg-black/85 backdrop-blur-sm' : ''
+                  className={`inline-block px-4 py-2 rounded-2xl text-center leading-snug transition-transform select-none ${
+                    customStyle.bg_box ? 'bg-black/85 backdrop-blur-md shadow-2xl border border-white/10' : ''
                   }`}
                   style={{
                     fontFamily:
                       customStyle.font_family === 'Montserrat'
-                        ? 'Montserrat, sans-serif'
+                        ? "'Montserrat', sans-serif"
                         : customStyle.font_family === 'Noto Sans Devanagari'
-                        ? 'Noto Sans Devanagari, sans-serif'
+                        ? "'Noto Sans Devanagari', sans-serif"
                         : customStyle.font_family,
                     fontWeight: customStyle.font_weight === 'black' ? 900 : 700,
                   }}
                 >
                   <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-                    {currentDisplayWords.map((w, idx) => {
-                      const isActive =
-                        currentTime >= (w.start - actualStart) &&
-                        currentTime <= (w.end - actualStart);
+                    {currentActivePhrase.words.map((item, idx) => {
+                      const isActive = idx === activeWordInPhraseIndex;
+                      const isEmphasized = item.word.is_emphasized && customStyle.keyword_emphasis;
+                      const displayWord = customStyle.uppercase ? item.word.word.toUpperCase() : item.word.word;
 
-                      const displayWord = customStyle.uppercase ? w.word.toUpperCase() : w.word;
+                      const strokeWidth = Math.min(3, Math.max(1.5, (customStyle.stroke_width || 5) * 0.45));
+                      const strokeColor = customStyle.stroke_color || '#000000';
+                      const primaryColor = customStyle.primary_color || '#FFFFFF';
+                      const highlightColor = customStyle.highlight_color || '#FFDF00';
 
                       return (
                         <span
                           key={idx}
-                          className={`inline-block transition-all duration-75 text-2xl sm:text-3xl tracking-tight ${
+                          className={`inline-block transition-all duration-100 tracking-tight font-black ${
                             isActive
                               ? customStyle.animation_style === 'bounce'
-                                ? 'animate-sub-bounce scale-110'
-                                : 'animate-sub-pop scale-110'
+                                ? 'scale-115 -translate-y-0.5'
+                                : 'scale-110 -translate-y-0.5'
                               : 'scale-100 opacity-95'
                           }`}
                           style={{
-                            color: isActive ? customStyle.highlight_color : customStyle.primary_color,
-                            WebkitTextStroke: `${customStyle.stroke_width}px ${customStyle.stroke_color}`,
-                            filter: `drop-shadow(0 ${customStyle.shadow_offset}px 0 rgba(0,0,0,0.9))`,
+                            fontSize: `${customStyle.font_size || 34}px`,
+                            color: isActive
+                              ? highlightColor
+                              : isEmphasized
+                              ? highlightColor
+                              : primaryColor,
+                            paintOrder: 'stroke fill',
+                            WebkitTextStroke: `${strokeWidth}px ${strokeColor}`,
+                            textShadow: `
+                              -2px -2px 0 ${strokeColor},
+                               2px -2px 0 ${strokeColor},
+                              -2px  2px 0 ${strokeColor},
+                               2px  2px 0 ${strokeColor},
+                               0px 4px 12px rgba(0,0,0,0.95)
+                            `,
+                            filter: isActive
+                              ? `drop-shadow(0 0 10px ${highlightColor})`
+                              : 'drop-shadow(0 2px 4px rgba(0,0,0,0.8))',
                           }}
                         >
                           {displayWord}
@@ -358,8 +591,8 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
               )}
             </div>
 
-            {/* Safe Zone Indicator Guidelines (Subtle) */}
-            <div className="absolute bottom-0 inset-x-0 h-16 pointer-events-none border-t border-dashed border-red-500/20 flex items-center justify-center">
+            {/* Safe Zone Indicator Margin */}
+            <div className="absolute bottom-0 inset-x-0 h-16 pointer-events-none border-t border-dashed border-red-500/20 flex items-center justify-center z-10">
               <span className="text-[9px] font-mono text-red-400/40 uppercase">Platform Safe Zone Margin</span>
             </div>
           </div>
@@ -392,7 +625,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
 
               <button
                 onClick={togglePlay}
-                className="w-10 h-10 rounded-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center justify-center shadow-lg transition"
+                className="w-10 h-10 rounded-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 flex items-center justify-center shadow-lg transition cursor-pointer"
               >
                 {isPlaying ? <Pause className="w-5 h-5 fill-slate-950" /> : <Play className="w-5 h-5 fill-slate-950 ml-0.5" />}
               </button>
@@ -426,7 +659,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
               }`}
             >
               <Type className="w-4 h-4" />
-              <span>Edit Words ({clipWords.length})</span>
+              <span>Subtitles & Accuracy ({phrases.length} lines)</span>
             </button>
 
             <button
@@ -466,26 +699,182 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
             </button>
           </div>
 
-          {/* TAB 1: SUBTITLE WORD-BY-WORD EDITOR */}
+          {/* TAB 1: MODERN PHRASE & ACCURACY SUBTITLE EDITOR */}
           {activeTab === 'subtitles' && (
-            <div className="space-y-4">
+            <div className="space-y-5">
+              {/* Hook text banner */}
               <div>
                 <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                  Hook Title Banner (First 3s)
+                  Hook Title Banner (First 3s on-screen teaser)
                 </label>
                 <input
                   type="text"
                   value={hookText}
                   onChange={(e) => setHookText(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-bold"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-bold focus:ring-1 focus:ring-emerald-500"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-                  Word-Level Subtitles (Click to edit misspelled words inline)
-                </label>
-                <div className="max-h-[360px] overflow-y-auto space-y-2 pr-2">
+              {/* Subtitle Accuracy & AI Polishing Toolbar */}
+              <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleAIPolishSubtitles}
+                    disabled={isPolishing}
+                    className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-purple-500 to-indigo-500 hover:brightness-110 text-white text-xs font-bold flex items-center gap-1.5 shadow-md shadow-indigo-500/20 cursor-pointer disabled:opacity-50"
+                    title="Uses Gemini 3.6 Flash to fix punctuation, speech-to-text typos, capitalization, and remove filler words"
+                  >
+                    <Wand2 className={`w-3.5 h-3.5 ${isPolishing ? 'animate-spin' : ''}`} />
+                    <span>{isPolishing ? 'AI Polishing...' : '✨ AI Polish Subtitles'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRemoveFillers}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+                    title="Remove 'um', 'uh', 'er', 'ah'"
+                  >
+                    Clean Fillers
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleFormatCapitalization('sentence')}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+                    title="Capitalize sentence starts"
+                  >
+                    Sentence Case
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleFormatCapitalization('upper')}
+                    className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+                    title="Force ALL CAPS for viral punch"
+                  >
+                    ALL CAPS
+                  </button>
+                </div>
+
+                {/* View toggle */}
+                <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-lg border border-slate-800 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setSubtitleViewMode('phrases')}
+                    className={`px-2.5 py-1 rounded font-semibold transition ${
+                      subtitleViewMode === 'phrases'
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Phrases ({phrases.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSubtitleViewMode('words')}
+                    className={`px-2.5 py-1 rounded font-semibold transition ${
+                      subtitleViewMode === 'words'
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Words ({clipWords.length})
+                  </button>
+                </div>
+              </div>
+
+              {/* MODE 1: PHRASE CARDS (RECOMMENDED DESCRIPT/CAPCUT STYLE) */}
+              {subtitleViewMode === 'phrases' && (
+                <div className="space-y-3 max-h-[460px] overflow-y-auto pr-2">
+                  {phrases.map((phrase) => {
+                    const isPhraseActive = currentActivePhrase?.id === phrase.id;
+
+                    return (
+                      <div
+                        key={phrase.id}
+                        className={`p-3 rounded-xl border transition-all ${
+                          isPhraseActive
+                            ? 'border-emerald-500 bg-emerald-950/20 shadow-lg shadow-emerald-950/40 ring-1 ring-emerald-500/50'
+                            : 'border-slate-800 bg-slate-950/60 hover:border-slate-700'
+                        }`}
+                      >
+                        {/* Phrase Header */}
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleSeek(phrase.start)}
+                              className="font-mono text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2 py-0.5 rounded border border-emerald-500/20 transition cursor-pointer"
+                              title="Click to seek video"
+                            >
+                              {phrase.start.toFixed(2)}s - {phrase.end.toFixed(2)}s
+                            </button>
+
+                            {isPhraseActive && (
+                              <span className="text-[10px] uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1 animate-pulse">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+                                Speaking
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handlePlayPhrase(phrase)}
+                              className="p-1 rounded text-slate-400 hover:text-emerald-400 hover:bg-slate-800 transition"
+                              title="Play this phrase snippet"
+                            >
+                              <Play className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Phrase Text Input */}
+                        <div className="mb-2">
+                          <input
+                            type="text"
+                            value={phrase.text}
+                            onChange={(e) => handlePhraseTextChange(phrase, e.target.value)}
+                            className="w-full bg-slate-900/80 border border-slate-700/80 rounded-lg px-3 py-1.5 text-xs text-white font-semibold focus:outline-none focus:ring-1 focus:ring-emerald-500 transition"
+                            placeholder="Type to edit phrase..."
+                          />
+                        </div>
+
+                        {/* Word Chips with Emphasis Toggle */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          <span className="text-[10px] text-slate-500 font-mono mr-1">Words:</span>
+                          {phrase.words.map((item, wIdx) => {
+                            const isEmphasized = item.word.is_emphasized;
+
+                            return (
+                              <button
+                                key={wIdx}
+                                type="button"
+                                onClick={() => handleToggleWordEmphasis(item.globalIndex)}
+                                className={`px-2 py-0.5 rounded text-[11px] font-semibold transition border flex items-center gap-1 ${
+                                  isEmphasized
+                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 ring-1 ring-amber-500/30'
+                                    : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-600'
+                                }`}
+                                title={`Click to toggle emphasis. Time: ${item.relStart.toFixed(2)}s`}
+                              >
+                                <span>{item.word.word}</span>
+                                {isEmphasized && <span className="text-amber-400 text-[10px]">★</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* MODE 2: DETAILED WORD-BY-WORD TIMELINE */}
+              {subtitleViewMode === 'words' && (
+                <div className="space-y-2 max-h-[460px] overflow-y-auto pr-2">
                   {clipWords.map((w, index) => {
                     const globalIdx = words.indexOf(w);
                     const isActive =
@@ -495,23 +884,42 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                     return (
                       <div
                         key={index}
-                        onClick={() => handleSeek(w.start - actualStart)}
                         className={`flex items-center gap-3 p-2 rounded-lg border transition ${
                           isActive
-                            ? 'border-emerald-500 bg-emerald-950/30'
+                            ? 'border-emerald-500 bg-emerald-950/30 ring-1 ring-emerald-500/40'
                             : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
                         }`}
                       >
-                        <span className="font-mono text-[10px] text-slate-500 w-16 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleSeek(w.start - actualStart)}
+                          className="font-mono text-[10px] text-emerald-400 hover:underline w-16 shrink-0 text-left"
+                        >
                           {(w.start - actualStart).toFixed(2)}s
-                        </span>
+                        </button>
 
                         <input
                           type="text"
                           value={w.word}
-                          onChange={(e) => handleWordTextChange(globalIdx, e.target.value)}
+                          onChange={(e) => {
+                            const updated = [...words];
+                            updated[globalIdx].word = e.target.value;
+                            setWords(updated);
+                          }}
                           className="bg-transparent border-none text-xs font-semibold text-white focus:outline-none focus:ring-1 focus:ring-emerald-500 rounded px-1 flex-1"
                         />
+
+                        <button
+                          type="button"
+                          onClick={() => handleToggleWordEmphasis(globalIdx)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold transition border ${
+                            w.is_emphasized
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'
+                          }`}
+                        >
+                          {w.is_emphasized ? '★ Highlight' : 'Normal'}
+                        </button>
 
                         <button
                           type="button"
@@ -525,7 +933,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                     );
                   })}
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -566,7 +974,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
               {/* Custom adjustments */}
               <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-4">
                 <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                  Fine-Tune Style Settings
+                  Fine-Tune Style & Typography Settings
                 </h4>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -579,10 +987,10 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                       onChange={(e) => setCustomStyle({ ...customStyle, font_family: e.target.value })}
                       className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="Montserrat">Montserrat (Modern Viral)</option>
+                      <option value="Montserrat">Montserrat (Viral Short-Form)</option>
                       <option value="Noto Sans Devanagari">Noto Sans Devanagari (Hindi)</option>
                       <option value="Bebas Neue">Bebas Neue (Punchy Caps)</option>
-                      <option value="Arial">Arial (Clean)</option>
+                      <option value="Arial">Arial (Clean Minimal)</option>
                     </select>
                   </div>
 
@@ -600,12 +1008,49 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                       }
                       className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
                     >
-                      <option value="hormozi">Hormozi Scale & Word Color</option>
+                      <option value="hormozi">Hormozi (Pop Scale & Active Color)</option>
                       <option value="bounce">Bouncy Pop</option>
                       <option value="karaoke">Smooth Word Karaoke</option>
                       <option value="pop">Whole Frame Pop</option>
                       <option value="typewriter">Typewriter Reveal</option>
                       <option value="fade">Subtle Fade</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                      Font Size: {customStyle.font_size || 34}px
+                    </label>
+                    <input
+                      type="range"
+                      min={22}
+                      max={52}
+                      step={2}
+                      value={customStyle.font_size || 34}
+                      onChange={(e) => setCustomStyle({ ...customStyle, font_size: Number(e.target.value) })}
+                      className="w-full accent-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-400 mb-1">
+                      Words Per Line ({customStyle.words_per_line || 3})
+                    </label>
+                    <select
+                      value={customStyle.words_per_line || 3}
+                      onChange={(e) =>
+                        setCustomStyle({
+                          ...customStyle,
+                          words_per_line: Number(e.target.value),
+                        })
+                      }
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                    >
+                      <option value={2}>2 Words (Snappy)</option>
+                      <option value={3}>3 Words (Optimal Viral)</option>
+                      <option value={4}>4 Words (Descriptive)</option>
                     </select>
                   </div>
                 </div>
@@ -669,7 +1114,7 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                   </div>
                 </div>
 
-                <div className="flex items-center gap-6 pt-2">
+                <div className="flex flex-wrap items-center gap-6 pt-2">
                   <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
                     <input
                       type="checkbox"
@@ -688,6 +1133,16 @@ export const EditorView: React.FC<EditorViewProps> = ({ clip, videoId, onBack, o
                       className="rounded accent-emerald-500"
                     />
                     <span>Dark Backing Box</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={customStyle.keyword_emphasis}
+                      onChange={(e) => setCustomStyle({ ...customStyle, keyword_emphasis: e.target.checked })}
+                      className="rounded accent-emerald-500"
+                    />
+                    <span>Keyword Highlight Stars</span>
                   </label>
                 </div>
               </div>

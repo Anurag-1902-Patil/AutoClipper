@@ -1,4 +1,4 @@
-import { Job, Clip, SubtitlePreset, SEOMetadata } from '../types';
+import { Job, Clip, SubtitlePreset, SEOMetadata, WordItem } from '../types';
 
 const BASE_URL = '';
 
@@ -120,3 +120,20 @@ export async function openExportFolder(jobId: string): Promise<{ message: string
   if (!res.ok) throw new Error('Failed to open export folder');
   return res.json();
 }
+
+export async function polishClipSubtitles(
+  clipId: string,
+  words?: WordItem[]
+): Promise<{ message: string; words: WordItem[] }> {
+  const res = await fetch(`${BASE_URL}/api/clips/${clipId}/polish-subtitles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ words }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || 'Failed to polish subtitles');
+  }
+  return res.json();
+}
+

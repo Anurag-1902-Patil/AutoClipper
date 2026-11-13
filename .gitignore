@@ -41,6 +41,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # OS specific files
+.vscode/
 .DS_Store
 Thumbs.db
 desktop.ini
