@@ -23,7 +23,7 @@ def extract_video_id(url_or_id: str) -> str:
 def fetch_metadata(url_or_id: str) -> VideoMetadata:
     """Fetch video metadata without downloading the full video."""
     video_id = extract_video_id(url_or_id)
-    canonical_url = f"https://www.youtube.com/watch?v=https://www.youtube.com/watch?v={video_id}" if "youtube" not in url_or_id else url_or_id
+    canonical_url = f"https://www.youtube.com/watch?v={video_id}"
 
     ydl_opts = {
         'extract_flat': False,
